@@ -5,6 +5,16 @@ from itertools import product
 from collections import Counter
 import numpy as np
 
+def get_active_people(df):
+    people = df.columns.drop("time")
+    active = []
+
+    for p in people:
+        if df[p].notna().any():  # at least one hour availability listed
+            active.append(p)
+
+    return active
+
 def load_csv(path):
     return pd.read_csv(path)
 
@@ -81,6 +91,8 @@ def score_schedule(schedule):
 
 def generate_schedules(hour_blocks, availability, max_schedules=500):
     people = set()
+    all_people = set(people)
+
     for v in availability.values():
         people.update(v)
     people = sorted(list(people))
@@ -134,6 +146,14 @@ def generate_schedules(hour_blocks, availability, max_schedules=500):
 
     return [s for _, s in schedules_scored]
 
+def print_schedule_stats(schedule, all_people):
+    scheduled_people = set(schedule.values())
+    unscheduled_people = sorted(list(all_people - scheduled_people))
+
+    print("--------------------------------------------------")
+    print(f"Scheduled {len(scheduled_people)} / {len(all_people)} people")
+    print("Unscheduled:", ", ".join(unscheduled_people) if unscheduled_people else "None")
+
 def save_schedule(schedule, output_path):
     rows = []
     for hour, person in sorted(schedule.items()):
@@ -150,11 +170,13 @@ def main(csv_path, max_schedules=50):
 
     print(f"Found {len(hour_blocks)} hour blocks.")
     schedules = generate_schedules(hour_blocks, availability, max_schedules=max_schedules)
-
+    all_people = set(get_active_people(df))
     print(f"Generated {len(schedules)} schedules (max {max_schedules}).")
 
     base = os.path.splitext(os.path.basename(csv_path))[0]
     for i, sched in enumerate(schedules, start=1):
+        print(f"\nSchedule #{i}")
+        print_schedule_stats(sched, all_people)
         output_path = f"{base}_schedule_{i}.csv"
         save_schedule(sched, output_path)
         print(f"Saved {output_path}")
