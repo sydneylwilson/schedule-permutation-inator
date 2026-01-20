@@ -1,23 +1,30 @@
 import pandas as pd
 from datetime import datetime, timedelta
-import sys, os
-from itertools import product
+import sys, os 
 from collections import Counter
 import numpy as np
 
+# Hard code the names of people who should be schedule with someone else, makes it less likely (but not impossible) 
+# for them to be scheduled in the first round, so they can be added manually later 
+# NOTE: These should match the when2meet names
+INEXPERIENCED = [""]
+
+# Remove from the list anyone who does not have at least 1 hour of availability listed
 def get_active_people(df):
     people = df.columns.drop("time")
     active = []
 
     for p in people:
-        if df[p].notna().any():  # at least one hour availability listed
+        if df[p].notna().any():
             active.append(p)
 
     return active
 
+# Read in CSV
 def load_csv(path):
     return pd.read_csv(path)
 
+# When2meet stores time in UTC and 12-hour clock (quite the interesting combination), therefore normalize it to EST and 24-hour clock
 def normalize_times(df):
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"])
@@ -26,43 +33,40 @@ def normalize_times(df):
     df["time"] = df["time"] + pd.Timedelta(hours=int(offset_hours))
     return df
 
-
+# Put together each hour block for the schedule
 def build_hour_blocks(df):
     df = normalize_times(df)
     df = df.sort_values("time")
-
     people = df.columns.drop("time").tolist()
-
+    # for this subset of people, once again sort the inexperienced people to last
+    people = sorted(people, key=lambda x: x in INEXPERIENCED)
     availability_by_slot = {}
+
     for _, row in df.iterrows():
         time = row["time"]
         available = [p for p in people if pd.notna(row[p])]
         availability_by_slot[time] = set(available)
-
     start_date = df["time"].dt.date.min()
     end_date = df["time"].dt.date.max()
-
     dates = []
     current = start_date
+
     while current <= end_date:
         if current.weekday() < 5:
             dates.append(current)
         current += timedelta(days=1)
-
     hour_blocks = []
     availability = {}
 
     for d in dates:
-        for hour in range(10, 19):  # 10am to 6pm inclusive
+        for hour in range(10, 19): # 10 AM to 6 PM
             block_start = pd.Timestamp(datetime.combine(d, datetime.min.time()) + timedelta(hours=hour))
-
             slots = [
                 block_start + pd.Timedelta(minutes=0),
                 block_start + pd.Timedelta(minutes=15),
                 block_start + pd.Timedelta(minutes=30),
                 block_start + pd.Timedelta(minutes=45),
             ]
-
             available_people = None
             for s in slots:
                 if s not in availability_by_slot:
@@ -77,29 +81,33 @@ def build_hour_blocks(df):
                 hour_blocks.append(block_start)
                 availability[block_start] = sorted(list(available_people))
 
+    for hour in availability:
+        availability[hour] = sorted(
+            availability[hour],
+            key=lambda x: x in INEXPERIENCED
+        )
+
     return hour_blocks, availability
 
-
+# Maximize how many different people are on the schedule (first pass should incorporate as many as possible 
+# since we can always manually add more later)
 def score_schedule(schedule):
     people = list(schedule.values())
     unique_people = len(set(people))
-    
     counts = Counter(people)
     variance = np.var(list(counts.values()))
-    
     return unique_people * 1000 - variance
 
+# Generate the schedule using backtracking algorithm
 def generate_schedules(hour_blocks, availability, max_schedules=500):
     people = set()
-    all_people = set(people)
 
     for v in availability.values():
         people.update(v)
-    people = sorted(list(people))
 
+    people = sorted(list(people))
     total_hours = {p: 0 for p in people}
     daily_hours = {p: {} for p in people}
-
     schedules = []
 
     def backtrack(i, current_schedule, last_person, consecutive_count):
@@ -132,28 +140,30 @@ def generate_schedules(hour_blocks, availability, max_schedules=500):
 
             total_hours[person] -= 1
             daily_hours[person][day] -= 1
+
             if daily_hours[person][day] == 0:
                 del daily_hours[person][day]
+
             current_schedule.pop(hour)
 
             if len(schedules) >= max_schedules:
                 return
 
     backtrack(0, {}, None, 0)
-
     schedules_scored = [(score_schedule(s), s) for s in schedules]
     schedules_scored.sort(reverse=True, key=lambda x: x[0])
 
     return [s for _, s in schedules_scored]
 
+# Print to console stats on how many people were scheduled and list those who were not scheduled (to be manually added later)
 def print_schedule_stats(schedule, all_people):
     scheduled_people = set(schedule.values())
     unscheduled_people = sorted(list(all_people - scheduled_people))
-
     print("--------------------------------------------------")
     print(f"Scheduled {len(scheduled_people)} / {len(all_people)} people")
     print("Unscheduled:", ", ".join(unscheduled_people) if unscheduled_people else "None")
 
+# Build the dataframe for exporting
 def save_schedule(schedule, output_path):
     rows = []
     for hour, person in sorted(schedule.items()):
@@ -185,7 +195,6 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python permuter.py when2meet_schedule.csv")
         sys.exit(1)
-
     csv_path = sys.argv[1]
     max_schedules = int(sys.argv[2]) if len(sys.argv) > 2 else 50
     main(csv_path, max_schedules)
